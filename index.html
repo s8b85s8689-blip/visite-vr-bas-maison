@@ -48,6 +48,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // Revit (mm) -> scène (m) : x = X/1000, z = -Y/1000
 const P=(X,Y)=>new THREE.Vector3(X/1000,0,-Y/1000);
@@ -67,34 +68,107 @@ const renderer=new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.setSize(innerWidth,innerHeight);
 renderer.outputColorSpace=THREE.SRGBColorSpace;
-renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.05;
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0;
 renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local-floor');
 renderer.xr.setFoveation(1);
 app.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
-const scene=new THREE.Scene(); scene.background=new THREE.Color(0xdfe7ee);
-const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.05,100);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.05,200);
 const rig=new THREE.Group(); rig.add(camera); scene.add(rig);
 camera.position.set(0,1.6,0);
 
-scene.add(new THREE.HemisphereLight(0xffffff,0xe9e3d8,1.7));
-const sun=new THREE.DirectionalLight(0xfff2e0,1.4); sun.position.set(4,8,3); scene.add(sun);
-const fill=new THREE.DirectionalLight(0xe8f0ff,0.5); fill.position.set(-5,6,-4); scene.add(fill);
+// Environnement : reflets doux (RoomEnvironment) + lumières
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture;
+scene.add(new THREE.HemisphereLight(0xfffaf2,0xd9cdb8,0.9));
+const sun=new THREE.DirectionalLight(0xfff0d8,1.1); sun.position.set(5,9,4); scene.add(sun);
+const bounce=new THREE.DirectionalLight(0xfff6ea,0.9); bounce.position.set(0.3,-10,0.2); scene.add(bounce); // lumière rebondie du sol vers les plafonds
 
-// Parquet chêne clair (texture procédurale, lames 180 mm)
-function parquet(){
-  const c=document.createElement('canvas'); c.width=c.height=1024; const g=c.getContext('2d');
-  const tones=['#d8bb8e','#d1b385','#dfc49a','#cdae7f','#dabf93','#d4b689','#c9a979','#e2c9a1'];
-  const rows=11,rh=1024/rows; let s=11; const r=()=>((s=(s*16807)%2147483647)/2147483647);
-  for(let y=0;y<rows;y++){ let x=-r()*600;
-    while(x<1024){ const L=420+r()*260; g.fillStyle=tones[Math.floor(r()*tones.length)]; g.fillRect(x,y*rh,L,rh);
-      g.globalAlpha=.09; g.strokeStyle='#7a5a36'; for(let k=0;k<6;k++){const yy=y*rh+4+r()*(rh-8); g.beginPath(); g.moveTo(x,yy); g.bezierCurveTo(x+L*.3,yy+(r()-.5)*6,x+L*.7,yy+(r()-.5)*6,x+L,yy); g.stroke();}
-      g.globalAlpha=1; g.fillStyle='rgba(110,80,50,.45)'; g.fillRect(x,y*rh,2,rh); x+=L; }
-    g.fillStyle='rgba(110,80,50,.4)'; g.fillRect(0,y*rh,1024,1.5); }
-  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
-  t.anisotropy=renderer.capabilities.getMaxAnisotropy(); return t;
+// ---------- Textures procédurales ----------
+const ANISO=renderer.capabilities.getMaxAnisotropy();
+let seed=7; const rnd=()=>((seed=(seed*16807)%2147483647)/2147483647);
+function tex(draw,size=512,srgb=true){ const c=document.createElement('canvas'); c.width=c.height=size; draw(c.getContext('2d'),size);
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.anisotropy=ANISO; if(srgb) t.colorSpace=THREE.SRGBColorSpace; return t; }
+const hex=(r,g,b)=>`rgb(${r|0},${g|0},${b|0})`;
+function grain(g,n,base,amp,count,sz){ g.fillStyle=base; g.fillRect(0,0,n,n);
+  for(let i=0;i<count;i++){ const v=(rnd()-.5)*amp; g.fillStyle=v>0?`rgba(255,255,255,${v})`:`rgba(0,0,0,${-v})`; g.fillRect(rnd()*n,rnd()*n,sz,sz);} }
+const T={
+  parquet:()=>tex((g,n)=>{ const tones=['#d8bb8e','#d1b385','#dfc49a','#cdae7f','#dabf93','#d4b689','#c9a979','#e2c9a1'];
+    const rows=11,rh=n/rows; for(let y=0;y<rows;y++){ let x=-rnd()*n*.6;
+      while(x<n){ const L=n*(.41+rnd()*.25); g.fillStyle=tones[Math.floor(rnd()*tones.length)]; g.fillRect(x,y*rh,L,rh);
+        g.globalAlpha=.10; g.strokeStyle='#7a5a36'; for(let k=0;k<7;k++){const yy=y*rh+3+rnd()*(rh-6); g.beginPath(); g.moveTo(x,yy); g.bezierCurveTo(x+L*.3,yy+(rnd()-.5)*5,x+L*.7,yy+(rnd()-.5)*5,x+L,yy); g.stroke();}
+        g.globalAlpha=1; g.fillStyle='rgba(110,80,50,.45)'; g.fillRect(x,y*rh,2,rh); x+=L; }
+      g.fillStyle='rgba(110,80,50,.4)'; g.fillRect(0,y*rh,n,1.5); } },1024),
+  wood:(r,gg,b)=>tex((g,n)=>{ g.fillStyle=hex(r,gg,b); g.fillRect(0,0,n,n);
+    for(let i=0;i<140;i++){ const y=rnd()*n, k=(rnd()-.5)*.35; g.strokeStyle=k>0?`rgba(255,240,215,${k*.5})`:`rgba(70,40,15,${-k})`; g.lineWidth=1+rnd()*2.5;
+      g.beginPath(); g.moveTo(0,y); for(let x=0;x<=n;x+=32) g.lineTo(x,y+Math.sin(x/90+i)*4+(rnd()-.5)*2); g.stroke(); } }),
+  fabric:(r,gg,b)=>tex((g,n)=>{ g.fillStyle=hex(r,gg,b); g.fillRect(0,0,n,n);
+    for(let y=0;y<n;y+=3){ g.fillStyle=`rgba(0,0,0,${.05+rnd()*.05})`; g.fillRect(0,y,n,1); }
+    for(let x=0;x<n;x+=3){ g.fillStyle=`rgba(255,255,255,${.03+rnd()*.04})`; g.fillRect(x,0,1,n); }
+    grain(g,n,'rgba(0,0,0,0)',.12,6000,2); }),
+  granite:()=>tex((g,n)=>{ g.fillStyle='#1c1c1e'; g.fillRect(0,0,n,n);
+    for(let i=0;i<9000;i++){ const v=rnd(); g.fillStyle=v>.93?'rgba(200,200,205,.55)':v>.8?'rgba(120,120,125,.35)':'rgba(0,0,0,.3)'; const s=rnd()*2.4+.6; g.fillRect(rnd()*n,rnd()*n,s,s);} }),
+  brushed:()=>tex((g,n)=>{ g.fillStyle='#c4c8cc'; g.fillRect(0,0,n,n);
+    for(let y=0;y<n;y++){ g.fillStyle=`rgba(${rnd()>.5?255:0},${rnd()>.5?255:0},${rnd()>.5?255:0},0)`; g.fillStyle=`rgba(${rnd()>.5?'255,255,255':'60,60,60'},${rnd()*.12})`; g.fillRect(0,y,n,1);} }),
+  paint:(base)=>tex((g,n)=>grain(g,n,base,.05,14000,2)),
+  render:(base)=>tex((g,n)=>{ grain(g,n,base,.16,26000,2); grain(g,n,'rgba(0,0,0,0)',.08,1500,5); }),
+  concrete:()=>tex((g,n)=>{ grain(g,n,'#9da3a2',.18,22000,2); grain(g,n,'rgba(0,0,0,0)',.1,800,7); }),
+  grass:()=>tex((g,n)=>{ g.fillStyle='#5f7f3a'; g.fillRect(0,0,n,n);
+    for(let i=0;i<26000;i++){ const v=rnd(); g.fillStyle=v>.5?`rgba(150,185,90,${rnd()*.35})`:`rgba(30,50,15,${rnd()*.35})`; g.fillRect(rnd()*n,rnd()*n,1.5,3+rnd()*4);} }),
+};
+
+// UV "boîte" en coordonnées monde (1 unité = 1 m)
+function boxUV(geo){ const p=geo.attributes.position, nr=geo.attributes.normal, uv=new Float32Array(p.count*2);
+  for(let i=0;i<p.count;i++){ const ax=Math.abs(nr.getX(i)), ay=Math.abs(nr.getY(i)), az=Math.abs(nr.getZ(i)); let u,v;
+    if(ay>=ax&&ay>=az){u=p.getX(i);v=p.getZ(i);} else if(ax>=az){u=p.getZ(i);v=p.getY(i);} else {u=p.getX(i);v=p.getY(i);}
+    uv[2*i]=u; uv[2*i+1]=v; }
+  geo.setAttribute('uv',new THREE.BufferAttribute(uv,2)); }
+const rep=(t,m)=>{ t.repeat.set(1/m,1/m); return t; };
+
+// Murs : peinture + ombrage bas/haut + plinthe + faïence dans la salle de bain
+function wallMaterial(name){
+  const m=new THREE.MeshStandardMaterial({name,map:rep(T.paint('#efece6'),1.2),roughness:.92,side:THREE.DoubleSide});
+  m.onBeforeCompile=sh=>{
+    sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vWP; varying vec3 vWN;')
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\nvWP=(modelMatrix*vec4(transformed,1.0)).xyz; vWN=normalize(mat3(modelMatrix)*objectNormal);');
+    sh.fragmentShader=sh.fragmentShader.replace('#include <common>','#include <common>\nvarying vec3 vWP; varying vec3 vWN;')
+      .replace('#include <map_fragment>',`#include <map_fragment>
+        bool sdb = vWP.x>-1.072 && vWP.x<1.253 && vWP.z>-6.415 && vWP.z<-3.925 && vWP.y<2.2;
+        if(sdb){ float h = abs(vWN.x)>0.5 ? vWP.z : vWP.x; vec2 gq=fract(vec2(h,vWP.y)/vec2(0.3,0.15));
+          float ln = max(step(gq.x,0.02),step(gq.y,0.04)); diffuseColor.rgb = mix(vec3(0.90,0.92,0.93), vec3(0.62,0.64,0.66), ln); }
+        else if(vWP.y<0.08 && vWP.y>-0.01){ diffuseColor.rgb = vec3(0.96,0.95,0.93); }
+        float ao = mix(0.70,1.0,smoothstep(0.0,0.40,vWP.y)) * mix(0.82,1.0,smoothstep(2.75,2.40,vWP.y));
+        diffuseColor.rgb *= ao;`)
+      .replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nif(vWP.x>-1.072 && vWP.x<1.253 && vWP.z>-6.415 && vWP.z<-3.925 && vWP.y<2.2) roughnessFactor=0.25;');
+  };
+  return m;
 }
+function styleFor(name,old){
+  const c=old.color; const C=k=>Math.round(Math.pow(c[k],1/2.2)*255);
+  const rgb=[C('r'),C('g'),C('b')];
+  const std=(o)=>new THREE.MeshStandardMaterial(Object.assign({name,side:THREE.DoubleSide},o));
+  if(/parquet/i.test(name)) return std({map:rep(T.parquet(),2),roughness:.5,envMapIntensity:.6});
+  if(/Mur par d|Isolant|Peinture/i.test(name)) return wallMaterial(name);
+  if(/Enduit/i.test(name)) return std({map:rep(T.render('#cf9a52'),1),roughness:1});
+  if(/B[ée]ton/i.test(name)) return std({map:rep(T.concrete(),1.5),roughness:.95});
+  if(/Plan de travail noir/i.test(name)) return std({map:rep(T.granite(),.6),roughness:.22,envMapIntensity:1.2});
+  if(/Inox|Chrome|Alu|Steel - S09/i.test(name)) return std({map:rep(T.brushed(),.4),metalness:.85,roughness:.32,color:/S09|bross/i.test(name)?0x55585c:0xffffff});
+  if(/Tissu/i.test(name)) return std({map:rep(T.fabric(...rgb),.25),roughness:1});
+  if(/Bois|Oak|Ash|bouleau|chene|Cadre/i.test(name)) return std({map:rep(T.wood(...rgb),.6),roughness:.6});
+  if(/Laque|C[ée]ramique|Porcelaine|PVC|M[ée]tal - Blanc|Clear White|Ivoire/i.test(name)) return std({color:new THREE.Color().setRGB(c.r,c.g,c.b),roughness:/Laque|PVC|Clear/i.test(name)?.35:.12,envMapIntensity:1});
+  if(/Vitrage|^Verre$|Verre - Four/i.test(name)) return new THREE.MeshPhysicalMaterial({name,color:0xcfe3ef,metalness:0,roughness:.03,transparent:true,opacity:.18,envMapIntensity:1.5,side:THREE.DoubleSide,depthWrite:false});
+  if(/Noir ecran|Plastique - Noir/i.test(name)) return std({color:0x0a0a0c,roughness:.12,envMapIntensity:1.3});
+  return std({color:new THREE.Color().setRGB(c.r,c.g,c.b),roughness:.7});
+}
+
+// Extérieur : ciel dégradé + pelouse
+{ const sky=tex((g,n)=>{ const gr=g.createLinearGradient(0,0,0,n); gr.addColorStop(0,'#7fb0dd'); gr.addColorStop(.48,'#cfe2f0'); gr.addColorStop(.52,'#e9eef0'); gr.addColorStop(1,'#cfd8d0'); g.fillStyle=gr; g.fillRect(0,0,n,n); },256);
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(80,32,16),new THREE.MeshBasicMaterial({map:sky,side:THREE.BackSide,fog:false})));
+  const gt=T.grass(); gt.repeat.set(60,60);
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(120,120).rotateX(-Math.PI/2),new THREE.MeshStandardMaterial({map:gt,roughness:1}));
+  ground.position.y=-0.26; scene.add(ground); }
 
 const floors=[];  // surfaces de téléportation
 new GLTFLoader().load('model.glb',gltf=>{
@@ -102,15 +176,9 @@ new GLTFLoader().load('model.glb',gltf=>{
   root.traverse(o=>{
     if(!o.isMesh) return;
     const name=(o.material.name||'');
-    o.material.side=THREE.DoubleSide;
-    if(/parquet/i.test(name)){
-      const pos=o.geometry.attributes.position, uv=new Float32Array(pos.count*2);
-      for(let i=0;i<pos.count;i++){uv[2*i]=pos.getX(i)/2; uv[2*i+1]=pos.getZ(i)/2;}
-      o.geometry.setAttribute('uv',new THREE.BufferAttribute(uv,2));
-      o.material=new THREE.MeshStandardMaterial({map:parquet(),roughness:.6,name});
-      floors.push(o);
-    }
-    if(o.material.transparent) o.material.depthWrite=false;
+    boxUV(o.geometry);
+    o.material=styleFor(name,o.material);
+    if(/parquet/i.test(name)) floors.push(o);
   });
   scene.add(root);
   document.getElementById('load').remove();
