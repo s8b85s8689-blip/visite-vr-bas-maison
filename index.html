@@ -28,6 +28,8 @@
   <h1>Bas de maison V2</h1>
   <div class="sub">PAOLA &amp; ERIC · niveau 0 · export Revit</div>
   <div class="body">
+    <div class="lbl">Couchages</div>
+    <button id="bedbtn" style="width:100%">Ouvrir les canapés</button>
     <div class="lbl">Aller à</div>
     <div class="grid" id="views"></div>
     <div class="help">
@@ -35,6 +37,8 @@
       Gâchette droite : viser le sol et relâcher pour se téléporter.<br>
       Joystick gauche : avancer · joystick droit : pivoter de 30°.<br>
       Bouton A ou X : pièce suivante.<br>
+      Bouton B ou Y : ouvrir / fermer le rapido et le BZ.<br>
+      Les murs et les meubles bloquent le passage.<br>
       <b>Ordinateur :</b> glisser pour regarder, ZQSD/flèches pour avancer.
     </div>
   </div>
@@ -171,6 +175,7 @@ function styleFor(name,old){
   ground.position.y=-0.26; scene.add(ground); }
 
 const floors=[];  // surfaces de téléportation
+const obstacles=[]; // murs, meubles, vitrages (collisions)
 new GLTFLoader().load('model.glb',gltf=>{
   const root=gltf.scene;
   root.traverse(o=>{
@@ -178,12 +183,41 @@ new GLTFLoader().load('model.glb',gltf=>{
     const name=(o.material.name||'');
     boxUV(o.geometry);
     o.material=styleFor(name,o.material);
-    if(/parquet/i.test(name)) floors.push(o);
+    if(/parquet/i.test(name)) floors.push(o); else obstacles.push(o);
   });
   scene.add(root);
+  buildBeds();
   document.getElementById('load').remove();
   goView(0);
 },undefined,e=>{document.getElementById('load').textContent='Erreur de chargement : '+e.message;});
+
+// ---------- Couchages : rapido et BZ ouvrables ----------
+const beds=new THREE.Group(); beds.visible=false; scene.add(beds);
+let bedsOpen=false;
+function B(X0,X1,Y0,Y1,Z0,Z1,mat){ // coordonnées Revit en mm
+  const m=new THREE.Mesh(new THREE.BoxGeometry((X1-X0)/1000,(Z1-Z0)/1000,(Y1-Y0)/1000),mat);
+  m.position.set((X0+X1)/2000,(Z0+Z1)/2000,-(Y0+Y1)/2000); beds.add(m); return m; }
+function buildBeds(){
+  const fab=(r,g,b)=>{const t=T.fabric(r,g,b); t.repeat.set(3,3); return new THREE.MeshStandardMaterial({map:t,roughness:1});};
+  const sheet=new THREE.MeshStandardMaterial({color:0xf4f2ee,roughness:.95});
+  const pillow=new THREE.MeshStandardMaterial({color:0xfbfaf7,roughness:.9});
+  const duvetR=(()=>{const t=T.fabric(205,214,224); t.repeat.set(4,4); return new THREE.MeshStandardMaterial({map:t,roughness:1});})();
+  const duvetB=(()=>{const t=T.fabric(232,222,240); t.repeat.set(4,4); return new THREE.MeshStandardMaterial({map:t,roughness:1});})();
+  // Rapido 2,23 m : couchage 160 x 200 déplié vers le séjour
+  B(-888,712,1200,2200,80,430,fab(96,116,136));          // matelas déplié
+  B(-888,712,400,2200,430,450,sheet);                    // drap
+  B(-830,-130,430,830,450,560,pillow); B(10,700,430,830,450,560,pillow);
+  B(-900,724,1050,2220,450,490,duvetR);                  // couette
+  B(-850,-800,2150,2200,0,80,new THREE.MeshStandardMaterial({color:0x2a2a2a})); B(675,725,2150,2200,0,80,new THREE.MeshStandardMaterial({color:0x2a2a2a})); // pieds
+  // BZ 140 : couchage 140 x 190 déplié
+  B(-1588,-188,8170,9170,60,400,fab(160,140,178));
+  B(-1588,-188,8170,9970,400,420,sheet);
+  B(-1240,-540,9580,9950,420,530,pillow);
+  B(-1600,-176,8150,9300,420,460,duvetB);
+}
+function setBeds(open){ bedsOpen=open; beds.visible=open;
+  beds.children.forEach(m=>{ const i=obstacles.indexOf(m); if(open&&i<0) obstacles.push(m); if(!open&&i>=0) obstacles.splice(i,1); });
+  const b=document.getElementById('bedbtn'); if(b) b.textContent=open?'Fermer les canapés':'Ouvrir les canapés'; }
 
 // Points de vue
 const vbox=document.getElementById('views');
@@ -199,6 +233,28 @@ function goView(i){
   } else { rig.position.set(p.x,0,p.z); rig.rotation.set(0,0,0); yaw=want; pitch=-0.12; applyLook(); }
 }
 function headYaw(){ const e=new THREE.Euler().setFromQuaternion(camera.quaternion,'YXZ'); return e.y; }
+// ---------- Collisions ----------
+const RADIUS=0.25, cray=new THREE.Raycaster();
+function headPos(){ const h=new THREE.Vector3(); camera.getWorldPosition(h); return h; }
+function freeAlong(dir,dist){ // dir horizontal normalisé
+  const h=headPos(); cray.far=dist+RADIUS;
+  for(const y of [0.35,0.95,Math.max(1.3,h.y-0.05)]){
+    cray.set(new THREE.Vector3(h.x,y,h.z),dir); if(cray.intersectObjects(obstacles,false).length) return false; }
+  return true; }
+function moveRig(v){ // déplacement avec glissement le long des murs
+  const d=v.length(); if(d<1e-6) return;
+  if(freeAlong(v.clone().normalize(),d)){ rig.position.add(v); return; }
+  const vx=new THREE.Vector3(v.x,0,0), vz=new THREE.Vector3(0,0,v.z);
+  if(Math.abs(v.x)>1e-6 && freeAlong(vx.clone().normalize(),Math.abs(v.x))) rig.position.add(vx);
+  else if(Math.abs(v.z)>1e-6 && freeAlong(vz.clone().normalize(),Math.abs(v.z))) rig.position.add(vz);
+}
+// Voile sombre quand la tête entre dans un mur (déplacement physique)
+const veil=new THREE.Mesh(new THREE.SphereGeometry(0.12,16,8),new THREE.MeshBasicMaterial({color:0x101418,side:THREE.BackSide,transparent:true,opacity:0,depthTest:false,fog:false}));
+veil.renderOrder=999; camera.add(veil);
+const DIRS=[...Array(8)].map((_,i)=>new THREE.Vector3(Math.cos(i*Math.PI/4),0,Math.sin(i*Math.PI/4)));
+function updateVeil(){ const h=headPos(); let dmin=9; cray.far=0.3;
+  for(const d of DIRS){ cray.set(h,d); const hit=cray.intersectObjects(obstacles,false)[0]; if(hit) dmin=Math.min(dmin,hit.distance); }
+  const target=dmin<0.08?1:dmin<0.2?(0.2-dmin)/0.12:0; veil.material.opacity+= (target-veil.material.opacity)*0.35; veil.visible=veil.material.opacity>0.01; }
 function applyLook(){ camera.rotation.set(pitch,yaw,0,'YXZ'); }
 
 // Contrôle ordinateur : regard à la souris, déplacement clavier
@@ -208,6 +264,7 @@ addEventListener('pointerup',()=>drag=null);
 addEventListener('pointermove',e=>{ if(!drag||renderer.xr.isPresenting) return;
   yaw-=(e.clientX-drag.x)*0.004; pitch=Math.max(-1.2,Math.min(1.2,pitch-(e.clientY-drag.y)*0.004)); drag={x:e.clientX,y:e.clientY}; applyLook(); });
 addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true); addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+document.getElementById('bedbtn').onclick=()=>setBeds(!bedsOpen);
 document.getElementById('hide').onclick=e=>{document.body.classList.toggle('min'); e.target.textContent=document.body.classList.contains('min')?'Afficher le panneau':'Réduire le panneau';};
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);});
 
@@ -234,13 +291,13 @@ const clock=new THREE.Clock();
 renderer.setAnimationLoop(()=>{
   const dt=Math.min(clock.getDelta(),0.05);
   if(renderer.xr.isPresenting){
-    marker.visible=false;
+    marker.visible=false; if(obstacles.length) updateVeil();
     for(const c of ctrls){
       if(c.userData.aim && floors.length){
         tmp.identity().extractRotation(c.matrixWorld);
         ray.ray.origin.setFromMatrixPosition(c.matrixWorld); ray.ray.direction.set(0,0,-1).applyMatrix4(tmp);
-        const h=ray.intersectObjects(floors,false)[0];
-        if(h && h.face && Math.abs(h.face.normal.y)>0.7 && h.distance<12){ marker.position.copy(h.point).setY(h.point.y+0.01); marker.visible=true; }
+        const h=ray.intersectObjects(floors.concat(obstacles),false)[0];
+        if(h && floors.includes(h.object) && h.face && Math.abs(h.face.normal.y)>0.7 && h.distance<12){ marker.position.copy(h.point).setY(h.point.y+0.01); marker.visible=true; }
       }
       const gp=c.userData.src&&c.userData.src.gamepad; if(!gp) continue;
       const hand=c.userData.src.handedness, ax=gp.axes;
@@ -248,7 +305,7 @@ renderer.setAnimationLoop(()=>{
       if(hand==='left' && Math.hypot(sx,sy)>0.15){
         const dir=new THREE.Vector3(); camera.getWorldDirection(dir); dir.y=0; dir.normalize();
         const right=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0));
-        rig.position.addScaledVector(dir,-sy*1.4*dt).addScaledVector(right,sx*1.4*dt);
+        moveRig(new THREE.Vector3().addScaledVector(dir,-sy*1.4*dt).addScaledVector(right,sx*1.4*dt));
       }
       if(hand==='right'){
         if(Math.abs(sx)>0.7 && snapReady){ const hp=new THREE.Vector3(); camera.getWorldPosition(hp);
@@ -258,12 +315,13 @@ renderer.setAnimationLoop(()=>{
       const b=gp.buttons[4]; if(b){ if(b.pressed&&!btnPrev&&hand==='right') goView((cur+1)%VIEWS.length); if(hand==='right') btnPrev=b.pressed; }
       if(hand==='left'&&gp.buttons[4]&&gp.buttons[4].pressed&&!c.userData.bp) goView((cur+1)%VIEWS.length);
       if(hand==='left'&&gp.buttons[4]) c.userData.bp=gp.buttons[4].pressed;
+      const by=gp.buttons[5]; if(by){ if(by.pressed&&!c.userData.byp) setBeds(!bedsOpen); c.userData.byp=by.pressed; }
     }
   } else {
     const f=(keys['z']||keys['w']||keys['arrowup']?1:0)-(keys['s']||keys['arrowdown']?1:0);
     const s=(keys['d']||keys['arrowright']?1:0)-(keys['q']||keys['a']||keys['arrowleft']?1:0);
     if(f||s){ const dir=new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw)), right=new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
-      rig.position.addScaledVector(dir,f*1.4*dt).addScaledVector(right,s*1.4*dt); }
+      moveRig(new THREE.Vector3().addScaledVector(dir,f*1.4*dt).addScaledVector(right,s*1.4*dt)); }
   }
   renderer.render(scene,camera);
 });
